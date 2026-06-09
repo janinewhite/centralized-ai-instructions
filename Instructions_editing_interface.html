@@ -593,7 +593,7 @@ function openRuleModal(id) {
     <div class="form-row form-row-3">
       <div><label>Tier</label><select id="m-tier">${tiers.map(t => `<option value="${t.id}" ${t.id===r.tier_id?'selected':''}>${t.name}</option>`).join('')}</select></div>
       <div><label>Category</label><select id="m-cat">${cats.map(c => `<option value="${c.id}" ${c.id===r.category_id?'selected':''}>${c.name}</option>`).join('')}</select></div>
-      <div><label>Display order</label><input id="m-order" type="number" value="${r.display_order || 1}"></div>
+      <div><label>Display order (blank when Active=No; required when Active=Yes)</label><input id="m-order" type="number" value="${r.display_order == null ? '' : r.display_order}"></div>
     </div>
     <div class="form-row form-row-2">
       <div><label>Scope</label><select id="m-scope">
@@ -629,9 +629,22 @@ function openRuleModal(id) {
     const instr = document.getElementById('m-instr').value;
     const tier_id = parseInt(document.getElementById('m-tier').value);
     const category_id = parseInt(document.getElementById('m-cat').value);
-    const display_order = parseInt(document.getElementById('m-order').value) || 1;
+    const display_order_raw = document.getElementById('m-order').value.trim();
     const scope = document.getElementById('m-scope').value;
     const active = document.getElementById('m-active').value;
+    // Nullable display_order: NULL when retired, required integer when active.
+    // CHECK constraint in instructions enforces (active='Yes' <=> display_order IS NOT NULL).
+    let display_order;
+    if (active === 'No') {
+      display_order = null;
+    } else {
+      const parsed = parseInt(display_order_raw, 10);
+      if (display_order_raw === '' || Number.isNaN(parsed)) {
+        alert('Display order is required when Active = Yes. Enter an integer.');
+        return;
+      }
+      display_order = parsed;
+    }
     const aw = document.getElementById('m-aw').value.trim() || null;
     const dretired = document.getElementById('m-dretired').value.trim() || null;
     const notes = document.getElementById('m-notes').value.trim() || null;
