@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Instructions DB — Read-Only Viewer</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.2/sql-wasm.js"></script>
+<style>
+:root {
+  --primary: #37474F;
+  --primary-light: #CFD8DC;
+  --primary-mid: #607D8B;
+  --primary-dark: #263238;
+  --accent: #455A64;
+  --gray: #595959;
+  --border: #CCCCCC;
+  --bg: #F7F7F7;
+  --white: #FFFFFF;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: Arial, sans-serif; font-size: 14px; background: var(--bg); color: #222; }
+header { background: var(--primary); color: white; padding: 12px 24px; }
+header h1 { font-size: 18px; font-weight: bold; }
+header .sub { font-size: 12px; opacity: 0.85; margin-top: 2px; }
+main { padding: 20px 24px; }
+.controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 16px; }
+.controls label { font-size: 12px; font-weight: bold; color: var(--gray); }
+.controls input, .controls select {
+  font-size: 13px; padding: 5px 10px; border: 1px solid var(--border); border-radius: 4px; background: white;
+}
+.controls input[type=text] { width: 280px; }
+.btn { background: var(--accent); color: white; border: none; padding: 6px 14px; border-radius: 4px;
+        cursor: pointer; font-size: 12px; font-weight: bold; }
+.btn:hover { background: var(--primary); }
+#no-db { text-align: center; padding: 60px 20px; color: var(--gray); }
+#no-db h2 { color: var(--primary); margin-bottom: 10px; }
+.meta { font-size: 12px; color: var(--gray); margin-bottom: 12px; padding: 8px 12px;
+         background: white; border-left: 3px solid var(--primary); border-radius: 0 4px 4px 0; }
+.tier-block { margin-bottom: 24px; }
+.tier-header { background: var(--primary); color: white; padding: 8px 14px; font-weight: bold;
+                font-size: 13px; border-radius: 4px 4px 0 0; }
+.cat-header { background: var(--primary-light); color: var(--primary-dark);
+               padding: 5px 14px; font-weight: bold; font-size: 12px; }
+.rule { background: white; border-bottom: 1px solid #EEE; padding: 10px 14px; }
+.rule:last-child { border-bottom: none; border-radius: 0 0 4px 4px; }
+.rule-title { font-weight: bold; color: var(--primary-dark); margin-bottom: 4px; }
+.rule-meta { font-size: 11px; color: var(--gray); margin-bottom: 6px; }
+.rule-body { font-size: 13px; line-height: 1.5; white-space: pre-wrap; color: #333; }
+.rule-aw { font-size: 11px; color: var(--accent); font-style: italic; margin-top: 4px; }
+.badge { display: inline-block; padding: 1px 6px; border-radius: 8px; font-size: 10px;
+           background: var(--primary-light); color: var(--primary-dark); margin-left: 6px; }
+.badge-scope-conditional { background: #FFF8E1; color: #F57F17; }
+.empty { text-align: center; color: var(--gray); padding: 40px; }
+
+.projects-block { margin-bottom: 20px; background: white; border: 1px solid var(--border); border-radius: 4px; padding: 0; }
+.projects-block > summary { padding: 8px 14px; font-weight: bold; font-size: 13px; color: var(--primary-dark); cursor: pointer; background: var(--primary-light); border-radius: 4px 4px 0 0; }
+.projects-block[open] > summary { border-radius: 4px 4px 0 0; border-bottom: 1px solid var(--border); }
+.projects-block table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.projects-block th, .projects-block td { padding: 6px 10px; border-bottom: 1px solid #EEE; text-align: left; }
+.projects-block th { background: #FAFAFA; color: var(--gray); font-weight: bold; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+.projects-block tr:last-child td { border-bottom: none; }
+.projects-block .ht-no { color: #B26A00; font-weight: bold; }
+.projects-block .act-no { color: var(--gray); font-style: italic; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Instructions DB — Read-Only Viewer</h1>
+  <div class="sub">Browse the unified rule set. To make changes, drop a markdown file in <code>Shared\Proposed\</code>.</div>
+</header>
+<main>
+  <div id="no-db">
+    <h2>Open Instructions.db</h2>
+    <p>Either pick the <code>Shared\</code> folder (Chrome / Edge) or select the file directly.</p>
+    <p style="margin-top:14px">
+      <button class="btn" onclick="openSharedFolder()">📂 Open Shared Folder</button>
+      &nbsp;or&nbsp;
+      <input type="file" id="db-file" accept=".db">
+    </p>
+    <p style="margin-top:8px;font-size:12px;color:var(--gray)">The folder is remembered for next time.</p>
+  </div>
+  <div id="app" style="display:none">
+    <div class="meta" id="meta-line">Loaded.</div>
+    <details class="projects-block" id="projs-details" open>
+      <summary id="projs-summary">Projects</summary>
+      <table>
+        <thead><tr><th>ID</th><th>Code</th><th>Name</th><th>Active</th><th>Has tracker</th><th>Date added</th><th>Date retired</th><th>Condition reviewed</th></tr></thead>
+        <tbody id="projs-body"></tbody>
+      </table>
+    </details>
+    <div class="controls">
+      <label>Project:</label>
+      <select id="proj"></select>
+      <label>Tier:</label>
+      <select id="tier"><option value="">All</option></select>
+      <label>Category:</label>
+      <select id="cat"><option value="">All</option></select>
+      <label>Search:</label>
+      <input type="text" id="q" placeholder="Title, instruction, active_when…">
+      <span style="margin-left:auto;color:var(--gray);font-size:12px" id="count"></span>
+    </div>
+    <div id="rules"></div>
+  </div>
+</main>
+<script>
+let SQL, db;
+
+// FSA + folder-memory state
+let dirHandle = null;
+let fileHandle = null;
+let openedViaFSA = false;
+
+// ── IndexedDB helpers for FSA handle persistence ──────────────────
+const IDB_NAME  = 'instructions_handles';
+const IDB_STORE = 'handles';
+
+function idbOpen() {
+  return new Promise((res, rej) => {
+    const req = indexedDB.open(IDB_NAME, 1);
+    req.onupgradeneeded = e => e.target.result.createObjectStore(IDB_STORE);
+    req.onsuccess = e => res(e.target.result);
+    req.onerror   = e => rej(e.target.error);
+  });
+}
+async function idbPut(key, val) {
+  const idb = await idbOpen();
+  return new Promise((res, rej) => {
+    const tx = idb.transaction(IDB_STORE, 'readwrite');
+    tx.objectStore(IDB_STORE).put(val, key);
+    tx.oncomplete = res; tx.onerror = rej;
+  });
+}
+async function idbGet(key) {
+  const idb = await idbOpen();
+  return new Promise((res, rej) => {
+    const tx = idb.transaction(IDB_STORE, 'readonly');
+    const req = tx.objectStore(IDB_STORE).get(key);
+    req.onsuccess = () => res(req.result);
+    req.onerror   = rej;
+  });
+}
+async function verifyPerm(handle, mode) {
+  if (!handle) return 'no-handle';
+  try {
+    const s = await handle.queryPermission({ mode });
+    if (s === 'granted') return 'granted';
+    return s;  // 'prompt' or 'denied'
+  } catch { return 'error'; }
+}
+async function requestPerm(handle, mode) {
+  if (!handle) return false;
+  try {
+    const r = await handle.requestPermission({ mode });
+    return r === 'granted';
+  } catch { return false; }
+}
+
+
+async function openSharedFolder() {
+  if (!('showDirectoryPicker' in window)) {
+    document.getElementById('db-file').click();
+    return;
+  }
+  let startInOpt;
+  try {
+    const saved = await idbGet('dirHandle');
+    if (saved) startInOpt = saved;
+  } catch {}
+  let pickedDir;
+  try {
+    const opts = { id: 'instructions-shared-folder', mode: 'read' };
+    if (startInOpt) opts.startIn = startInOpt;
+    pickedDir = await window.showDirectoryPicker(opts);
+  } catch (e) {
+    if (e.name === 'AbortError') return;
+    return;
+  }
+  let fH;
+  try {
+    fH = await pickedDir.getFileHandle('Instructions.db');
+  } catch {
+    alert('Instructions.db not found in the selected folder. Pick the Shared folder that directly contains Instructions.db.');
+    return;
+  }
+  const file = await fH.getFile();
+  const buf = await file.arrayBuffer();
+  await loadDbBytes(new Uint8Array(buf), file.name);
+  dirHandle = pickedDir; fileHandle = fH; openedViaFSA = true;
+  try {
+    await idbPut('dirHandle', pickedDir);
+    await idbPut('fileHandle', fH);
+    await idbPut('dirName', pickedDir.name || 'Shared');
+  } catch (e) { console.warn('Could not persist handles:', e); }
+}
+
+async function loadDbBytes(bytes, name) {
+  // SQLite magic-bytes guard.
+  const magic = [0x53,0x51,0x4C,0x69,0x74,0x65,0x20,0x66,0x6F,0x72,0x6D,0x61,0x74,0x20,0x33,0x00];
+  if (bytes.length < 16 || !magic.every((b,i) => bytes[i] === b)) {
+    alert('"' + name + '" is not a SQLite database. Pick Instructions.db.');
+    return false;
+  }
+  if (!SQL) SQL = await initSqlJs({ locateFile: file => 'https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.2/' + file });
+  try { db = new SQL.Database(bytes); } catch (e) { alert('sql.js error: ' + e.message); return false; }
+  document.getElementById('no-db').style.display = 'none';
+  document.getElementById('app').style.display = '';
+  init();
+  return true;
+}
+
+// Auto-restore the last folder if permission is already granted.
+async function tryRestoreLastFolder() {
+  if (!('showDirectoryPicker' in window)) return;
+  let saved, savedName;
+  try {
+    saved     = await idbGet('dirHandle');
+    savedName = await idbGet('dirName');
+  } catch { return; }
+  if (!saved) return;
+  const perm = await verifyPerm(saved, 'read');
+  if (perm === 'granted') {
+    try {
+      const fH = await saved.getFileHandle('Instructions.db');
+      const file = await fH.getFile();
+      const buf = await file.arrayBuffer();
+      const ok = await loadDbBytes(new Uint8Array(buf), file.name);
+      if (!ok) return;
+      dirHandle = saved; fileHandle = fH; openedViaFSA = true;
+      // Update meta line if/when init() ran
+      const meta = document.getElementById('meta-line');
+      if (meta) meta.textContent = 'Auto-loaded Instructions.db (' + (buf.byteLength/1024).toFixed(1) + ' KB) from "' + (saved.name || savedName || 'Shared') + '" — read-only.';
+    } catch (e) { console.warn('Auto-restore failed:', e); showReopenBanner(savedName || saved.name || 'last folder'); }
+  } else {
+    showReopenBanner(savedName || saved.name || 'last folder');
+  }
+}
+
+function showReopenBanner(folderName) {
+  const noDb = document.getElementById('no-db');
+  if (!noDb || document.getElementById('reopen-banner')) return;
+  const banner = document.createElement('div');
+  banner.id = 'reopen-banner';
+  banner.style.cssText = 'background:#FFF3E0;border-left:4px solid #E65100;padding:14px 18px;margin:20px auto;max-width:640px;border-radius:0 4px 4px 0;color:#5D4037;font-size:14px;line-height:1.5;text-align:left';
+  banner.innerHTML =
+    '<strong>Last opened folder:</strong> "' + folderName + '"<br>'
+  + '<small>Click below to reopen (browser permission needs to be re-granted).</small><br>'
+  + '<button class="btn" style="margin-top:10px" id="reopen-btn">📂 Reopen "' + folderName + '"</button>';
+  noDb.parentNode.insertBefore(banner, noDb);
+  document.getElementById('reopen-btn').onclick = async () => {
+    const saved = await idbGet('dirHandle');
+    if (!saved) { alert('No saved folder.'); return; }
+    const granted = await requestPerm(saved, 'read');
+    if (!granted) { alert('Permission denied. Click "📂 Open Shared Folder" to pick the folder manually.'); return; }
+    try {
+      const fH = await saved.getFileHandle('Instructions.db');
+      const file = await fH.getFile();
+      const buf = await file.arrayBuffer();
+      const ok = await loadDbBytes(new Uint8Array(buf), file.name);
+      if (!ok) return;
+      dirHandle = saved; fileHandle = fH; openedViaFSA = true;
+      banner.remove();
+    } catch (e) { alert('Reopen failed: ' + e.message); }
+  };
+}
+
+document.addEventListener('DOMContentLoaded', tryRestoreLastFolder);
+
+
+document.getElementById('db-file').addEventListener('change', async (e) => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const buf = await f.arrayBuffer();
+  const ok = await loadDbBytes(new Uint8Array(buf), f.name);
+  if (!ok) { e.target.value = ''; return; }
+  dirHandle = null; fileHandle = null; openedViaFSA = false;
+});
+
+function q1(sql, params) {
+  const stmt = db.prepare(sql);
+  if (params) stmt.bind(params);
+  const out = [];
+  while (stmt.step()) out.push(stmt.getAsObject());
+  stmt.free();
+  return out;
+}
+
+function init() {
+  // Populate project dropdown (active only)
+  const projs = q1("SELECT code, name FROM projects WHERE active='Yes' ORDER BY code");
+  const sel = document.getElementById('proj');
+  sel.innerHTML = projs.map(p => `<option value="${p.code}">${p.code} — ${p.name}</option>`).join('');
+  // Populate tier dropdown
+  const tiers = q1("SELECT id, name, sort_order FROM tiers ORDER BY sort_order");
+  document.getElementById('tier').innerHTML = '<option value="">All</option>'
+    + tiers.map(t => `<option value="${t.name}">${t.name}</option>`).join('');
+  // Populate category dropdown
+  const cats = q1("SELECT name FROM categories ORDER BY sort_order");
+  document.getElementById('cat').innerHTML = '<option value="">All</option>'
+    + cats.map(c => `<option value="${c.name}">${c.name}</option>`).join('');
+  // Hash for meta
+  // (We don't compute hash here — the file isn't on disk, but we show the size.)
+  const sz = (db.export().length / 1024).toFixed(1);
+  document.getElementById('meta-line').textContent = `Loaded Instructions.db (${sz} KB) — read-only.`;
+  // Bind filters
+  ['proj','tier','cat','q'].forEach(id => {
+    document.getElementById(id).addEventListener('input', render);
+  });
+  renderProjects();
+  render();
+}
+
+function renderProjects() {
+  const rows = q1("SELECT id, code, name, active, has_tracker, date_added, date_retired, condition_reviewed FROM projects ORDER BY id");
+  document.getElementById('projs-summary').textContent = 'Projects (' + rows.length + ')';
+  const body = document.getElementById('projs-body');
+  if (!rows.length) { body.innerHTML = '<tr><td colspan="8" class="empty">No projects.</td></tr>'; return; }
+  body.innerHTML = rows.map(r => {
+    const ht = (r.has_tracker === 'No')
+      ? '<span class="ht-no">No</span>'
+      : esc(r.has_tracker || '');
+    const ac = (r.active === 'No')
+      ? '<span class="act-no">No</span>'
+      : esc(r.active || '');
+    return '<tr>'
+      + '<td>' + r.id + '</td>'
+      + '<td>' + esc(r.code) + '</td>'
+      + '<td>' + esc(r.name) + '</td>'
+      + '<td>' + ac + '</td>'
+      + '<td>' + ht + '</td>'
+      + '<td>' + esc(r.date_added || '') + '</td>'
+      + '<td>' + esc(r.date_retired || '') + '</td>'
+      + '<td>' + esc(r.condition_reviewed || '') + '</td>'
+    + '</tr>';
+  }).join('');
+}
+
+function render() {
+  const proj = document.getElementById('proj').value;
+  const tier = document.getElementById('tier').value;
+  const cat  = document.getElementById('cat').value;
+  const q    = document.getElementById('q').value.toLowerCase();
+  let sql = "SELECT * FROM v_instructions_for_project WHERE project_code = :p";
+  const params = {':p': proj};
+  if (tier) { sql += " AND tier = :t"; params[':t'] = tier; }
+  if (cat)  { sql += " AND category = :c"; params[':c'] = cat; }
+  sql += " ORDER BY tier_order, category_order, display_order";
+  const rows = q1(sql, params);
+  const filtered = q ? rows.filter(r => (
+    (r.title||'').toLowerCase().includes(q) ||
+    (r.instruction||'').toLowerCase().includes(q) ||
+    (r.active_when||'').toLowerCase().includes(q)
+  )) : rows;
+  document.getElementById('count').textContent = `${filtered.length} rule${filtered.length===1?'':'s'}`;
+
+  // Group by tier and category in order
+  const out = [];
+  let lastTier = null, lastCat = null;
+  for (const r of filtered) {
+    if (r.tier !== lastTier) {
+      if (lastTier !== null) out.push('</div>');
+      out.push(`<div class="tier-block"><div class="tier-header">${esc(r.tier)}</div>`);
+      lastTier = r.tier; lastCat = null;
+    }
+    if (r.category !== lastCat) {
+      out.push(`<div class="cat-header">${esc(r.category)}</div>`);
+      lastCat = r.category;
+    }
+    const scopeBadge = r.scope === 'conditional'
+      ? '<span class="badge badge-scope-conditional">conditional</span>'
+      : '<span class="badge">global</span>';
+    out.push(
+      '<div class="rule">'
+      + `<div class="rule-title">${r.display_order}. ${esc(r.title)}${scopeBadge}</div>`
+      + `<div class="rule-meta">id ${r.id} · tier "${esc(r.tier)}" · category "${esc(r.category)}"</div>`
+      + `<div class="rule-body">${esc(r.instruction)}</div>`
+      + (r.active_when ? `<div class="rule-aw">Active when: ${esc(r.active_when)}</div>` : '')
+      + '</div>'
+    );
+  }
+  if (lastTier !== null) out.push('</div>');
+  document.getElementById('rules').innerHTML = out.length ? out.join('') : '<div class="empty">No rules match the current filters.</div>';
+}
+
+function esc(s) {
+  return (s == null ? '' : String(s))
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+</script>
+</body>
+</html>

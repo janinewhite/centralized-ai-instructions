@@ -1,0 +1,884 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Instructions DB — Editing Interface</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.2/sql-wasm.js">
+// ── Auto-restore last-used folder on page load ────────────────────
+async function tryRestoreLastFolder() {
+  if (!('showDirectoryPicker' in window)) return;
+  let saved, savedFile, savedName;
+  try {
+    saved     = await idbGet('dirHandle');
+    savedFile = await idbGet('fileHandle');
+    savedName = await idbGet('dirName');
+  } catch (e) {
+    console.warn('IDB read failed:', e);
+    return;
+  }
+  if (!saved) return;
+  const perm = await verifyPerm(saved, 'readwrite');
+  if (perm === 'granted') {
+    // Silent auto-load — no user gesture needed.
+    try {
+      const fH = savedFile || await saved.getFileHandle('Instructions.db');
+      const snapDir = await saved.getDirectoryHandle('db_snapshots', { create: true });
+      const file = await fH.getFile();
+      const buf = await file.arrayBuffer();
+      const ok = await loadDbFromBytes(new Uint8Array(buf), file.name);
+      if (!ok) return;
+      dirHandle = saved; fileHandle = fH; snapshotsHandle = snapDir;
+      openedViaFSA = true;
+      setStatus('Auto-loaded ' + file.name + ' (' + buf.byteLength + ' bytes) from "' + (saved.name || savedName || 'Shared') + '". Snapshot-on-Save enabled.');
+    } catch (e) {
+      console.warn('Auto-restore failed:', e);
+      showReopenBanner(savedName || saved.name || 'last folder');
+    }
+  } else {
+    showReopenBanner(savedName || saved.name || 'last folder');
+  }
+}
+
+function showReopenBanner(folderName) {
+  const noDb = document.getElementById('no-db');
+  if (!noDb) return;
+  // Avoid double-injecting the banner if tryRestore runs twice
+  if (document.getElementById('reopen-banner')) return;
+  const banner = document.createElement('div');
+  banner.id = 'reopen-banner';
+  banner.style.cssText = 'background:#FFF3E0;border-left:4px solid #E65100;padding:14px 18px;margin:20px auto;max-width:640px;border-radius:0 4px 4px 0;color:#5D4037;font-size:14px;line-height:1.5;text-align:left';
+  banner.innerHTML =
+    '<strong>Last opened folder:</strong> "' + folderName + '"<br>'
+  + '<small>Browser permission needs to be re-granted before auto-load can run silently.</small><br>'
+  + '<button class="btn" style="margin-top:10px" id="reopen-btn">📂 Reopen "' + folderName + '"</button>';
+  noDb.parentNode.insertBefore(banner, noDb);
+  document.getElementById('reopen-btn').onclick = async () => {
+    const saved = await idbGet('dirHandle');
+    if (!saved) { alert('No saved folder found.'); return; }
+    const granted = await requestPerm(saved, 'readwrite');
+    if (!granted) { alert('Permission denied. Click "📂 Open Shared Folder" and pick the folder manually.'); return; }
+    // Permission granted — load.
+    try {
+      const fH = await saved.getFileHandle('Instructions.db');
+      const snapDir = await saved.getDirectoryHandle('db_snapshots', { create: true });
+      const file = await fH.getFile();
+      const buf = await file.arrayBuffer();
+      const ok = await loadDbFromBytes(new Uint8Array(buf), file.name);
+      if (!ok) return;
+      dirHandle = saved; fileHandle = fH; snapshotsHandle = snapDir;
+      openedViaFSA = true;
+      banner.remove();
+      setStatus('Reopened ' + file.name + ' (' + buf.byteLength + ' bytes) from "' + (saved.name || folderName) + '". Snapshot-on-Save enabled.');
+    } catch (e) {
+      alert('Reopen failed: ' + e.message);
+    }
+  };
+}
+
+document.addEventListener('DOMContentLoaded', tryRestoreLastFolder);
+
+</script>
+<style>
+:root {
+  --primary: #37474F; --primary-light: #CFD8DC;
+  --primary-mid: #607D8B; --primary-dark: #263238;
+  --accent: #455A64; --gray: #595959;
+  --border: #CCCCCC; --bg: #F7F7F7; --white: #FFFFFF;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: Arial, sans-serif; font-size: 14px; background: var(--bg); color: #222; }
+header { background: var(--primary); color: white; padding: 12px 24px; display: flex; justify-content: space-between; align-items: center; }
+header h1 { font-size: 18px; font-weight: bold; }
+header .sub { font-size: 12px; opacity: 0.85; margin-top: 2px; }
+.menu-bar { background: var(--primary-mid); padding: 0 24px; display: flex; gap: 0; height: 36px; align-items: stretch; }
+.menu-item { color: white; padding: 0 18px; line-height: 36px; cursor: pointer; font-size: 13px; font-weight: bold; }
+.menu-item:hover, .menu-item.active { background: var(--primary); }
+.right-status { margin-left: auto; padding: 0 16px; line-height: 36px; font-size: 12px; color: rgba(255,255,255,0.85); }
+main { padding: 20px 24px; }
+.section { display: none; }
+.section.active { display: block; }
+#no-db { text-align: center; padding: 60px 20px; color: var(--gray); }
+#no-db h2 { color: var(--primary); margin-bottom: 10px; }
+.controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+.controls label { font-size: 12px; color: var(--gray); }
+.controls input, .controls select {
+  font-size: 13px; padding: 5px 10px; border: 1px solid var(--border); border-radius: 4px; background: white;
+}
+.controls input[type=text] { width: 220px; }
+.btn { background: var(--accent); color: white; border: none; padding: 6px 14px; border-radius: 4px;
+        cursor: pointer; font-size: 12px; font-weight: bold; }
+.btn:hover { background: var(--primary); }
+.btn-secondary { background: white; color: var(--primary); border: 1px solid var(--primary); }
+.btn-secondary:hover { background: var(--primary-light); }
+.btn-danger { background: white; color: #C62828; border: 1px solid #C62828; }
+.btn-danger:hover { background: #FFEBEE; }
+table { width: 100%; border-collapse: collapse; background: white; font-size: 13px; }
+th { background: var(--primary); color: white; padding: 8px 10px; text-align: left; font-size: 12px; white-space: nowrap; }
+td { padding: 7px 10px; border-bottom: 1px solid #EEE; vertical-align: top; }
+tr:hover td { background: var(--primary-light); }
+tr:nth-child(even) td { background: #FAFAFA; }
+tr:nth-child(even):hover td { background: var(--primary-light); }
+.cell-title { font-weight: bold; color: var(--primary-dark); max-width: 280px; }
+.cell-instr { max-width: 420px; white-space: pre-wrap; font-size: 12px; color: #444; line-height: 1.45; }
+.cell-tag { font-size: 11px; padding: 1px 6px; border-radius: 8px;
+              background: var(--primary-light); color: var(--primary-dark); display: inline-block; margin: 1px 2px; }
+.cell-scope-conditional { background: #FFF8E1; color: #F57F17; }
+.warning { background: #FFF3E0; border-left: 4px solid #E65100; padding: 10px 14px; margin-bottom: 14px;
+             color: #5D4037; font-size: 13px; line-height: 1.5; }
+.empty { text-align: center; color: var(--gray); padding: 40px; }
+
+/* Modal */
+#modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.45); z-index: 100;
+                    align-items: center; justify-content: center; }
+#modal-overlay.open { display: flex; }
+#modal { background: white; border-radius: 8px; padding: 24px; width: 720px; max-width: 95vw; max-height: 90vh;
+           overflow-y: auto; box-shadow: 0 8px 32px rgba(0,0,0,0.25); }
+#modal h2 { font-size: 16px; color: var(--primary); margin-bottom: 16px; border-bottom: 2px solid var(--primary); padding-bottom: 8px; }
+.form-row { margin-bottom: 12px; }
+.form-row label { display: block; font-size: 12px; font-weight: bold; color: var(--gray); margin-bottom: 4px; }
+.form-row input, .form-row select, .form-row textarea {
+  width: 100%; padding: 7px 10px; border: 1px solid var(--border); border-radius: 4px;
+  font-size: 13px; font-family: Arial, sans-serif;
+}
+.form-row textarea { resize: vertical; min-height: 120px; }
+.form-row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.form-row-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+.modal-actions { display: flex; gap: 10px; margin-top: 16px; justify-content: flex-end; }
+.checkbox-list { display: flex; gap: 12px; flex-wrap: wrap; padding: 8px; background: #FAFAFA;
+                   border: 1px solid var(--border); border-radius: 4px; }
+.checkbox-list label { display: flex; gap: 6px; align-items: center; font-size: 12px; font-weight: normal; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Instructions DB — Editing Interface</h1>
+    <div class="sub">Admin surface for <code>Shared\Instructions.db</code>. Use this in coordination with the Instructions tracker (proposal queue + rule change log).</div>
+  </div>
+  <div>
+    <input type="file" id="db-file" accept=".db" style="display:none">
+    <button class="btn" onclick="openSharedFolder()">📂 Open Shared Folder</button>
+    <button class="btn btn-secondary" onclick="document.getElementById('db-file').click()" title="Use this in browsers without File System Access support (Firefox).">📄 Open .db file</button>
+    <button class="btn btn-secondary" id="save-btn" onclick="saveDB()" style="display:none">💾 Save (snapshot + overwrite)</button>
+  </div>
+</header>
+<div class="menu-bar">
+  <div class="menu-item active" data-sec="rules"     onclick="navigateTo('rules')">Rules</div>
+  <div class="menu-item"        data-sec="cats"      onclick="navigateTo('cats')">Categories</div>
+  <div class="menu-item"        data-sec="conds"     onclick="navigateTo('conds')">Conditions</div>
+  <div class="menu-item"        data-sec="projs"     onclick="navigateTo('projs')">Projects</div>
+  <div class="menu-item"        data-sec="pctags"    onclick="navigateTo('pctags')">Project ↔ Conditions</div>
+  <div class="right-status" id="status">No DB loaded</div>
+</div>
+<main>
+  <div id="no-db">
+    <h2>Open Instructions.db</h2>
+    <p>Use the button above to open <code>Shared\Instructions.db</code>.</p>
+  </div>
+
+  <div id="app" style="display:none">
+    <div class="warning">
+      This interface writes to your in-browser copy of <code>Instructions.db</code>. Click 💾 Download
+      to export the modified DB and save it back to <code>Shared\</code>. <strong>Snapshot first.</strong>
+      Per the change protocol, every applied change should also be logged in the Instructions tracker's
+      <code>rule_change_log</code> table.
+    </div>
+
+    <!-- ── Rules ── -->
+    <div class="section active" id="sec-rules">
+      <div class="controls">
+        <label>Tier:</label>
+        <select id="r-tier"><option value="">All</option></select>
+        <label>Category:</label>
+        <select id="r-cat"><option value="">All</option></select>
+        <label>Scope:</label>
+        <select id="r-scope">
+          <option value="">All</option><option>global</option><option>conditional</option>
+        </select>
+        <label>Active:</label>
+        <select id="r-active">
+          <option value="">All</option><option>Yes</option><option>No</option>
+        </select>
+        <label>Search:</label>
+        <input type="text" id="r-q" placeholder="Title, instruction, active_when…">
+        <button class="btn" onclick="openRuleModal(null)">+ Add rule</button>
+      </div>
+      <div style="overflow-x:auto"><table><thead id="rules-head"></thead><tbody id="rules-body"></tbody></table></div>
+    </div>
+
+    <!-- ── Categories ── -->
+    <div class="section" id="sec-cats">
+      <div class="controls">
+        <button class="btn" onclick="openSimpleModal('cats',null)">+ Add category</button>
+      </div>
+      <div style="overflow-x:auto"><table><thead><tr><th>ID</th><th>Name</th><th>Sort order</th><th></th></tr></thead><tbody id="cats-body"></tbody></table></div>
+    </div>
+
+    <!-- ── Conditions ── -->
+    <div class="section" id="sec-conds">
+      <div class="controls">
+        <button class="btn" onclick="openSimpleModal('conds',null)">+ Add condition</button>
+      </div>
+      <div style="overflow-x:auto"><table><thead><tr><th>ID</th><th>Code</th><th>Name</th><th>Description</th><th></th></tr></thead><tbody id="conds-body"></tbody></table></div>
+    </div>
+
+    <!-- ── Projects ── -->
+    <div class="section" id="sec-projs">
+      <div class="controls">
+        <button class="btn" onclick="openSimpleModal('projs',null)">+ Add project</button>
+      </div>
+      <div style="overflow-x:auto"><table><thead><tr><th>ID</th><th>Code</th><th>Name</th><th>Active</th><th>Has tracker</th><th>Date added</th><th>Date retired</th><th>Condition reviewed</th><th></th></tr></thead><tbody id="projs-body"></tbody></table></div>
+    </div>
+
+    <!-- ── Project ↔ Conditions ── -->
+    <div class="section" id="sec-pctags">
+      <div class="controls">
+        <label>Project:</label>
+        <select id="pc-proj" onchange="renderProjectConditions()"></select>
+      </div>
+      <div id="pc-content"></div>
+    </div>
+  </div>
+</main>
+
+<!-- Modal -->
+<div id="modal-overlay"><div id="modal">
+  <h2 id="modal-title">Edit</h2>
+  <form id="modal-form" onsubmit="return false">
+    <div id="modal-fields"></div>
+    <div class="modal-actions">
+      <button type="button" class="btn-danger btn" id="modal-delete" style="display:none">Delete</button>
+      <button type="button" class="btn-secondary btn" onclick="closeModal()">Cancel</button>
+      <button type="button" class="btn" id="modal-save">Save</button>
+    </div>
+  </form>
+</div></div>
+
+<script>
+
+let SQL, db;
+let currentSec = 'rules';
+
+// File System Access state. When the user opens the Shared folder via the
+// directory picker, we keep both handles so Download can write the snapshot
+// and overwrite the live file without any further prompts.
+let dirHandle      = null;  // FileSystemDirectoryHandle for Shared\
+let fileHandle     = null;  // FileSystemFileHandle for Instructions.db
+let snapshotsHandle = null; // FileSystemDirectoryHandle for db_snapshots\
+let originalBytes  = null;  // Uint8Array of the bytes loaded into the browser
+let openedViaFSA   = false;
+
+// ── IndexedDB helpers for FSA handle persistence ──────────────────
+const IDB_NAME  = 'instructions_handles';
+const IDB_STORE = 'handles';
+
+function idbOpen() {
+  return new Promise((res, rej) => {
+    const req = indexedDB.open(IDB_NAME, 1);
+    req.onupgradeneeded = e => e.target.result.createObjectStore(IDB_STORE);
+    req.onsuccess = e => res(e.target.result);
+    req.onerror   = e => rej(e.target.error);
+  });
+}
+async function idbPut(key, val) {
+  const idb = await idbOpen();
+  return new Promise((res, rej) => {
+    const tx = idb.transaction(IDB_STORE, 'readwrite');
+    tx.objectStore(IDB_STORE).put(val, key);
+    tx.oncomplete = res; tx.onerror = rej;
+  });
+}
+async function idbGet(key) {
+  const idb = await idbOpen();
+  return new Promise((res, rej) => {
+    const tx = idb.transaction(IDB_STORE, 'readonly');
+    const req = tx.objectStore(IDB_STORE).get(key);
+    req.onsuccess = () => res(req.result);
+    req.onerror   = rej;
+  });
+}
+async function verifyPerm(handle, mode) {
+  if (!handle) return 'no-handle';
+  try {
+    const s = await handle.queryPermission({ mode });
+    if (s === 'granted') return 'granted';
+    return s;  // 'prompt' or 'denied'
+  } catch { return 'error'; }
+}
+async function requestPerm(handle, mode) {
+  if (!handle) return false;
+  try {
+    const r = await handle.requestPermission({ mode });
+    return r === 'granted';
+  } catch { return false; }
+}
+
+
+// ─────────────────────────────────────────────────────────────────
+// Open flow
+// ─────────────────────────────────────────────────────────────────
+
+async function openSharedFolder() {
+  if (!('showDirectoryPicker' in window)) {
+    // Fall back to the file input
+    document.getElementById('db-file').click();
+    return;
+  }
+  let pickedDir;
+  let startInOpt = undefined;
+  try {
+    // Use the saved folder as the picker's startIn so it defaults to last-used.
+    const saved = await idbGet('dirHandle');
+    if (saved) startInOpt = saved;
+  } catch {}
+  try {
+    const opts = { id: 'instructions-shared-folder', mode: 'readwrite' };
+    if (startInOpt) opts.startIn = startInOpt;
+    pickedDir = await window.showDirectoryPicker(opts);
+  } catch (e) {
+    if (e.name === 'AbortError') return; // user cancelled
+    setStatus('Could not open folder: ' + e.message, true);
+    return;
+  }
+  // Find Instructions.db in the picked folder.
+  let fH;
+  try {
+    fH = await pickedDir.getFileHandle('Instructions.db');
+  } catch (e) {
+    setStatus('Instructions.db not found in the selected folder. Pick the Shared\\ folder.', true);
+    return;
+  }
+  // Find or create db_snapshots/ subfolder.
+  let snapDir;
+  try {
+    snapDir = await pickedDir.getDirectoryHandle('db_snapshots', { create: true });
+  } catch (e) {
+    setStatus('Could not access db_snapshots\\: ' + e.message, true);
+    return;
+  }
+  // Load file bytes.
+  const file = await fH.getFile();
+  const buf = await file.arrayBuffer();
+  const ok = await loadDbFromBytes(new Uint8Array(buf), file.name);
+  if (!ok) return;
+  dirHandle       = pickedDir;
+  fileHandle      = fH;
+  snapshotsHandle = snapDir;
+  openedViaFSA    = true;
+  // Persist the handles for next time.
+  try {
+    await idbPut('dirHandle', pickedDir);
+    await idbPut('fileHandle', fH);
+    await idbPut('dirName', pickedDir.name || 'Shared');
+  } catch (e) { console.warn('Could not persist handles:', e); }
+  setStatus('Loaded ' + file.name + ' (' + buf.byteLength + ' bytes) from "' + (pickedDir.name || 'Shared') + '". Snapshot-on-Save enabled. Folder remembered.');
+}
+
+// Fallback: load via the <input type="file"> element.
+document.getElementById('db-file').addEventListener('change', async (e) => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const buf = await f.arrayBuffer();
+  const ok = await loadDbFromBytes(new Uint8Array(buf), f.name);
+  if (!ok) { e.target.value = ''; return; }
+  dirHandle = null; fileHandle = null; snapshotsHandle = null;
+  openedViaFSA = false;
+  setStatus('Loaded ' + f.name + ' (file-picker mode — Save will produce two browser downloads).');
+});
+
+// SQLite files start with these 16 bytes (the literal string "SQLite format 3" + NUL).
+const SQLITE_MAGIC = new Uint8Array([0x53,0x51,0x4C,0x69,0x74,0x65,0x20,0x66,0x6F,0x72,0x6D,0x61,0x74,0x20,0x33,0x00]);
+function isSqliteBytes(bytes) {
+  if (!bytes || bytes.length < 16) return false;
+  for (let i = 0; i < 16; i++) if (bytes[i] !== SQLITE_MAGIC[i]) return false;
+  return true;
+}
+
+async function loadDbFromBytes(bytes, name) {
+  // Validate magic bytes BEFORE instantiating sql.js. Refuse HTML, text, or any
+  // non-SQLite file the user might pick — and refuse before originalBytes is
+  // set, so a Save can never write garbage as a "snapshot".
+  if (!isSqliteBytes(bytes)) {
+    const head = Array.from(bytes.slice(0, 16))
+      .map(b => b >= 32 && b < 127 ? String.fromCharCode(b) : '.')
+      .join('');
+    alert('"' + name + '" is not a SQLite database.\n\n'
+        + 'Expected the file to start with: SQLite format 3\\0\n'
+        + 'Got (first 16 bytes as text): ' + head + '\n\n'
+        + 'If you opened a folder, the wrong file was selected — pick the Shared folder that directly contains Instructions.db.\n\n'
+        + 'If you opened a file, pick Instructions.db itself.');
+    setStatus('Refused to load: ' + name + ' is not a SQLite database.', true);
+    return false;
+  }
+  if (!SQL) SQL = await initSqlJs({ locateFile: file => 'https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.2/' + file });
+  try {
+    db = new SQL.Database(bytes);
+  } catch (e) {
+    alert('sql.js refused to open "' + name + '": ' + e.message);
+    setStatus('sql.js error opening ' + name + ': ' + e.message, true);
+    return false;
+  }
+  // Reject the file if it lacks the Instructions schema. Picking
+  // Instructions_tracker.db (or any other SQLite file) by mistake passes the
+  // magic-byte gate above but is not editable here. Confirm the tables this
+  // editor actually depends on are present before exposing the UI.
+  const REQUIRED_TABLES = ['projects','conditions','instructions'];
+  const missingTables = [];
+  {
+    const stmt = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?");
+    for (const t of REQUIRED_TABLES) {
+      stmt.bind([t]);
+      if (!stmt.step()) missingTables.push(t);
+      stmt.reset();
+    }
+    stmt.free();
+  }
+  if (missingTables.length) {
+    db.close();
+    db = null;
+    alert('"' + name + '" is not the Instructions DB.\n\n'
+        + 'This page (Instructions_editing_interface.html) expects Shared\\Instructions.db.\n\n'
+        + 'Missing required table(s): ' + missingTables.join(', ') + '\n\n'
+        + 'Tip: if you picked Instructions_tracker.db by mistake, re-open and select Instructions.db instead.');
+    setStatus('Refused to load: ' + name + ' is missing required Instructions tables (' + missingTables.join(', ') + ').', true);
+    return false;
+  }
+  originalBytes = bytes;
+  document.getElementById('no-db').style.display = 'none';
+  document.getElementById('app').style.display = '';
+  document.getElementById('save-btn').style.display = '';
+  console.log('Loaded SQLite DB:', name, '·', bytes.length, 'bytes · head=',
+              Array.from(bytes.slice(0,16)).map(b => b.toString(16).padStart(2,'0')).join(' '));
+  initAll();
+  return true;
+}
+
+function setStatus(msg, isError) {
+  const el = document.getElementById('status');
+  el.textContent = msg;
+  el.style.color = isError ? '#FFCDD2' : 'rgba(255,255,255,0.85)';
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────
+
+function q1(sql, params) {
+  const stmt = db.prepare(sql);
+  if (params) stmt.bind(params);
+  const out = [];
+  while (stmt.step()) out.push(stmt.getAsObject());
+  stmt.free();
+  return out;
+}
+function exec(sql, params) {
+  const stmt = db.prepare(sql);
+  if (params) stmt.bind(params);
+  stmt.step(); stmt.free();
+}
+function esc(s) {
+  // Escape all five HTML-sensitive characters so the result is safe for both
+  // text content AND attribute values. " and ' MUST be escaped because the
+  // editor's modal templates interpolate values into double-quoted attributes
+  // like <input value="${esc(...)}"> — a literal " in the data otherwise
+  // closes the attribute early and the field renders blank.
+  return (s == null ? '' : String(s))
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+function ts() {
+  const d = new Date();
+  const p = n => String(n).padStart(2,'0');
+  return d.getFullYear() + p(d.getMonth()+1) + p(d.getDate())
+       + '_' + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Navigation
+// ─────────────────────────────────────────────────────────────────
+
+function navigateTo(sec) {
+  currentSec = sec;
+  document.querySelectorAll('.menu-item').forEach(m => m.classList.toggle('active', m.dataset.sec === sec));
+  document.querySelectorAll('.section').forEach(s => s.classList.toggle('active', s.id === 'sec-' + sec));
+  if (sec === 'rules')  renderRules();
+  if (sec === 'cats')   renderCats();
+  if (sec === 'conds')  renderConds();
+  if (sec === 'projs')  renderProjs();
+  if (sec === 'pctags') renderPCTags();
+}
+
+function initAll() {
+  const tiers = q1("SELECT name FROM tiers ORDER BY sort_order");
+  document.getElementById('r-tier').innerHTML = '<option value="">All</option>' + tiers.map(t => `<option>${t.name}</option>`).join('');
+  const cats = q1("SELECT name FROM categories ORDER BY sort_order");
+  document.getElementById('r-cat').innerHTML = '<option value="">All</option>' + cats.map(c => `<option>${c.name}</option>`).join('');
+  ['r-tier','r-cat','r-scope','r-active','r-q'].forEach(id => {
+    document.getElementById(id).addEventListener('input', renderRules);
+  });
+  const projs = q1("SELECT code, name FROM projects WHERE active='Yes' ORDER BY code");
+  document.getElementById('pc-proj').innerHTML = projs.map(p => `<option value="${p.code}">${p.code} — ${p.name}</option>`).join('');
+  renderRules();
+}
+
+// ─────────────────────────────────────────────────────────────────
+// RULES
+// ─────────────────────────────────────────────────────────────────
+
+function renderRules() {
+  const tier = document.getElementById('r-tier').value;
+  const cat  = document.getElementById('r-cat').value;
+  const sc   = document.getElementById('r-scope').value;
+  const ac   = document.getElementById('r-active').value;
+  const q    = document.getElementById('r-q').value.toLowerCase();
+  let sql = `SELECT i.id, i.title, i.instruction, i.active, i.scope, i.active_when, i.display_order,
+                    i.date_retired, t.name AS tier, t.sort_order AS tier_order,
+                    c.name AS category, c.sort_order AS category_order
+             FROM instructions i
+             JOIN tiers t      ON t.id = i.tier_id
+             JOIN categories c ON c.id = i.category_id`;
+  const where = [];
+  if (tier) where.push(`t.name = '${tier.replace(/'/g,"''")}'`);
+  if (cat)  where.push(`c.name = '${cat.replace(/'/g,"''")}'`);
+  if (sc)   where.push(`i.scope = '${sc}'`);
+  if (ac)   where.push(`i.active = '${ac}'`);
+  if (where.length) sql += " WHERE " + where.join(" AND ");
+  sql += " ORDER BY i.active DESC, i.display_order, t.sort_order, c.sort_order, i.id";
+  let rows = q1(sql);
+  if (q) rows = rows.filter(r => (
+    (r.title||'').toLowerCase().includes(q) ||
+    (r.instruction||'').toLowerCase().includes(q) ||
+    (r.active_when||'').toLowerCase().includes(q)
+  ));
+  document.getElementById('rules-head').innerHTML =
+    '<tr><th>ID</th><th>Tier</th><th>Category</th><th>Order</th><th>Title / Instruction</th>'
+    + '<th>Scope · Conditions</th><th>Active when</th><th>Active</th><th></th></tr>';
+  if (!rows.length) {
+    document.getElementById('rules-body').innerHTML = '<tr><td colspan="9" class="empty">No rules</td></tr>';
+    return;
+  }
+  document.getElementById('rules-body').innerHTML = rows.map(r => {
+    const conds = q1("SELECT c.code FROM instruction_conditions ic JOIN conditions c ON c.id = ic.condition_id WHERE ic.instruction_id = " + r.id);
+    const condTags = conds.map(c => `<span class="cell-tag">${c.code}</span>`).join(' ');
+    const scopeCls = r.scope === 'conditional' ? 'cell-tag cell-scope-conditional' : 'cell-tag';
+    return '<tr>'
+      + `<td>${r.id}</td>`
+      + `<td>${esc(r.tier)}</td>`
+      + `<td>${esc(r.category)}</td>`
+      + `<td>${r.display_order == null ? '' : r.display_order}</td>`
+      + `<td class="cell-instr"><strong class="cell-title">${esc(r.title)}</strong><br>${esc((r.instruction||'').slice(0,260))}${(r.instruction||'').length>260?'…':''}</td>`
+      + `<td><span class="${scopeCls}">${r.scope}</span> ${condTags}</td>`
+      + `<td>${esc(r.active_when || '')}</td>`
+      + `<td>${r.active}${r.date_retired ? '<br><small>retired '+r.date_retired+'</small>' : ''}</td>`
+      + `<td><button class="btn btn-secondary" onclick="openRuleModal(${r.id})">Edit</button></td>`
+      + '</tr>';
+  }).join('');
+}
+
+function openRuleModal(id) {
+  const tiers = q1("SELECT id, name FROM tiers ORDER BY sort_order");
+  const cats  = q1("SELECT id, name FROM categories ORDER BY sort_order");
+  const conds = q1("SELECT id, code, name FROM conditions ORDER BY code");
+  let r = {};
+  let attached = new Set();
+  if (id) {
+    r = q1("SELECT * FROM instructions WHERE id = " + id)[0];
+    attached = new Set(q1("SELECT condition_id FROM instruction_conditions WHERE instruction_id = " + id).map(x => x.condition_id));
+  }
+  document.getElementById('modal-title').textContent = id ? 'Edit rule (id ' + id + ')' : 'Add rule';
+  document.getElementById('modal-fields').innerHTML = `
+    <div class="form-row"><label>Title</label><input id="m-title" value="${esc(r.title || '')}"></div>
+    <div class="form-row"><label>Instruction</label><textarea id="m-instr">${esc(r.instruction || '')}</textarea></div>
+    <div class="form-row form-row-3">
+      <div><label>Tier</label><select id="m-tier">${tiers.map(t => `<option value="${t.id}" ${t.id===r.tier_id?'selected':''}>${t.name}</option>`).join('')}</select></div>
+      <div><label>Category</label><select id="m-cat">${cats.map(c => `<option value="${c.id}" ${c.id===r.category_id?'selected':''}>${c.name}</option>`).join('')}</select></div>
+      <div><label>Display order</label><input id="m-order" type="number" value="${r.display_order || 1}"></div>
+    </div>
+    <div class="form-row form-row-2">
+      <div><label>Scope</label><select id="m-scope">
+        <option value="global" ${r.scope === 'global' ? 'selected' : ''}>global</option>
+        <option value="conditional" ${r.scope === 'conditional' ? 'selected' : ''}>conditional</option>
+      </select></div>
+      <div><label>Active</label><select id="m-active">
+        <option value="Yes" ${(r.active || 'Yes') === 'Yes' ? 'selected' : ''}>Yes</option>
+        <option value="No"  ${r.active === 'No'  ? 'selected' : ''}>No</option>
+      </select></div>
+    </div>
+    <div class="form-row"><label>Active when (runtime trigger; blank = always)</label><input id="m-aw" value="${esc(r.active_when || '')}"></div>
+    <div class="form-row"><label>Conditions (relevant only when scope = conditional)</label>
+      <div class="checkbox-list">
+        ${conds.map(c => `<label><input type="checkbox" data-cid="${c.id}" ${attached.has(c.id)?'checked':''}> ${c.code} — ${c.name}</label>`).join('')}
+      </div>
+    </div>
+    <div class="form-row form-row-2">
+      <div><label>Date retired (YYYY-MM-DD; blank = not retired)</label><input id="m-dretired" value="${esc(r.date_retired || '')}"></div>
+      <div><label>Notes</label><input id="m-notes" value="${esc(r.notes || '')}"></div>
+    </div>
+    <div class="form-row"><label>Migration notes (legacy IDs etc.)</label><input id="m-migr" value="${esc(r.migration_notes || '')}"></div>
+  `;
+  document.getElementById('modal-delete').style.display = id ? '' : 'none';
+  document.getElementById('modal-delete').onclick = () => {
+    if (!confirm('Delete rule ' + id + '? This is permanent in this in-browser DB until you Download.')) return;
+    exec("DELETE FROM instruction_conditions WHERE instruction_id = " + id);
+    exec("DELETE FROM instructions WHERE id = " + id);
+    closeModal(); renderRules();
+  };
+  document.getElementById('modal-save').onclick = () => {
+    const title = document.getElementById('m-title').value.trim();
+    const instr = document.getElementById('m-instr').value;
+    const tier_id = parseInt(document.getElementById('m-tier').value);
+    const category_id = parseInt(document.getElementById('m-cat').value);
+    const display_order = parseInt(document.getElementById('m-order').value) || 1;
+    const scope = document.getElementById('m-scope').value;
+    const active = document.getElementById('m-active').value;
+    const aw = document.getElementById('m-aw').value.trim() || null;
+    const dretired = document.getElementById('m-dretired').value.trim() || null;
+    const notes = document.getElementById('m-notes').value.trim() || null;
+    const migr  = document.getElementById('m-migr').value.trim() || null;
+    if (!title) { alert('Title required'); return; }
+    if (!instr) { alert('Instruction body required'); return; }
+    const today = new Date().toISOString().slice(0,10);
+    if (id) {
+      const stmt = db.prepare("UPDATE instructions SET title=?, instruction=?, tier_id=?, category_id=?, display_order=?, scope=?, active=?, active_when=?, date_retired=?, notes=?, migration_notes=? WHERE id=?");
+      stmt.run([title, instr, tier_id, category_id, display_order, scope, active, aw, dretired, notes, migr, id]);
+      stmt.free();
+      exec("DELETE FROM instruction_conditions WHERE instruction_id = " + id);
+    } else {
+      const stmt = db.prepare("INSERT INTO instructions (title, instruction, tier_id, category_id, display_order, scope, active, active_when, date_added, date_retired, notes, migration_notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)");
+      stmt.run([title, instr, tier_id, category_id, display_order, scope, active, aw, today, dretired, notes, migr]);
+      stmt.free();
+      const newId = q1("SELECT last_insert_rowid() AS id")[0].id;
+      document.querySelectorAll('#modal-fields input[type=checkbox]').forEach(cb => {
+        if (cb.checked) exec("INSERT INTO instruction_conditions (instruction_id, condition_id) VALUES (" + newId + ", " + parseInt(cb.dataset.cid) + ")");
+      });
+      closeModal(); renderRules(); return;
+    }
+    document.querySelectorAll('#modal-fields input[type=checkbox]').forEach(cb => {
+      if (cb.checked) exec("INSERT INTO instruction_conditions (instruction_id, condition_id) VALUES (" + id + ", " + parseInt(cb.dataset.cid) + ")");
+    });
+    closeModal(); renderRules();
+  };
+  document.getElementById('modal-overlay').classList.add('open');
+}
+
+// ─────────────────────────────────────────────────────────────────
+// CATEGORIES / CONDITIONS / PROJECTS / PROJECT-CONDITIONS
+// ─────────────────────────────────────────────────────────────────
+
+function renderCats() {
+  const rows = q1("SELECT * FROM categories ORDER BY sort_order");
+  document.getElementById('cats-body').innerHTML = rows.length ? rows.map(r =>
+    `<tr><td>${r.id}</td><td>${esc(r.name)}</td><td>${r.sort_order}</td>`
+    + `<td><button class="btn btn-secondary" onclick="openSimpleModal('cats',${r.id})">Edit</button></td></tr>`
+  ).join('') : '<tr><td colspan="4" class="empty">No categories</td></tr>';
+}
+
+function renderConds() {
+  const rows = q1("SELECT * FROM conditions ORDER BY code");
+  document.getElementById('conds-body').innerHTML = rows.length ? rows.map(r =>
+    `<tr><td>${r.id}</td><td>${esc(r.code)}</td><td>${esc(r.name)}</td>`
+    + `<td class="cell-instr">${esc(r.description || '')}</td>`
+    + `<td><button class="btn btn-secondary" onclick="openSimpleModal('conds',${r.id})">Edit</button></td></tr>`
+  ).join('') : '<tr><td colspan="5" class="empty">No conditions</td></tr>';
+}
+
+function renderProjs() {
+  const rows = q1("SELECT * FROM projects ORDER BY code");
+  document.getElementById('projs-body').innerHTML = rows.length ? rows.map(r =>
+    `<tr><td>${r.id}</td><td>${esc(r.code)}</td><td>${esc(r.name)}</td>`
+    + `<td>${r.active}</td><td>${r.has_tracker}</td><td>${r.date_added || ''}</td><td>${r.date_retired || ''}</td><td>${r.condition_reviewed || ''}</td>`
+    + `<td><button class="btn btn-secondary" onclick="openSimpleModal('projs',${r.id})">Edit</button></td></tr>`
+  ).join('') : '<tr><td colspan="9" class="empty">No projects</td></tr>';
+}
+
+function renderPCTags() {
+  const proj = document.getElementById('pc-proj').value;
+  if (!proj) { document.getElementById('pc-content').innerHTML = ''; return; }
+  const pid = q1("SELECT id FROM projects WHERE code = '" + proj.replace(/'/g,"''") + "'")[0].id;
+  const conds = q1("SELECT id, code, name, description FROM conditions ORDER BY code");
+  const attached = new Set(q1("SELECT condition_id FROM project_conditions WHERE project_id = " + pid).map(x => x.condition_id));
+  const html = conds.map(c => {
+    const isOn = attached.has(c.id);
+    return `<div style="background:white;padding:10px 14px;margin-bottom:8px;border-left:4px solid ${isOn?'var(--accent)':'#CCC'};border-radius:0 4px 4px 0">
+      <label style="display:flex;gap:10px;align-items:center;font-size:13px">
+        <input type="checkbox" data-cid="${c.id}" ${isOn?'checked':''} onchange="togglePCTag(${pid}, ${c.id}, this.checked)">
+        <span><strong>${c.code}</strong> — ${esc(c.name)}</span>
+      </label>
+      <div style="margin-left:24px;margin-top:4px;font-size:12px;color:var(--gray)">${esc(c.description || '')}</div>
+    </div>`;
+  }).join('');
+  document.getElementById('pc-content').innerHTML = html;
+}
+function renderProjectConditions() { renderPCTags(); }
+function togglePCTag(pid, cid, isOn) {
+  if (isOn) {
+    exec(`INSERT OR IGNORE INTO project_conditions (project_id, condition_id) VALUES (${pid}, ${cid})`);
+  } else {
+    exec(`DELETE FROM project_conditions WHERE project_id = ${pid} AND condition_id = ${cid}`);
+  }
+}
+
+function openSimpleModal(kind, id) {
+  let r = {};
+  if (id) r = q1(`SELECT * FROM ${kind === 'cats' ? 'categories' : kind === 'conds' ? 'conditions' : 'projects'} WHERE id = ${id}`)[0];
+  let fields = '';
+  if (kind === 'cats') {
+    fields = `<div class="form-row"><label>Name</label><input id="m-name" value="${esc(r.name || '')}"></div>
+              <div class="form-row"><label>Sort order</label><input id="m-so" type="number" value="${r.sort_order || 100}"></div>`;
+    document.getElementById('modal-title').textContent = id ? 'Edit category' : 'Add category';
+  }
+  if (kind === 'conds') {
+    fields = `<div class="form-row form-row-2">
+                <div><label>Code (snake_case)</label><input id="m-code" value="${esc(r.code || '')}"></div>
+                <div><label>Name</label><input id="m-name" value="${esc(r.name || '')}"></div>
+              </div>
+              <div class="form-row"><label>Description</label><textarea id="m-desc">${esc(r.description || '')}</textarea></div>`;
+    document.getElementById('modal-title').textContent = id ? 'Edit condition' : 'Add condition';
+  }
+  if (kind === 'projs') {
+    fields = `<div class="form-row form-row-2">
+                <div><label>Code</label><input id="m-code" value="${esc(r.code || '')}"></div>
+                <div><label>Name</label><input id="m-name" value="${esc(r.name || '')}"></div>
+              </div>
+              <div class="form-row form-row-2">
+                <div><label>Active</label><select id="m-active"><option value="Yes" ${(r.active||'Yes')==='Yes'?'selected':''}>Yes</option><option value="No" ${r.active==='No'?'selected':''}>No</option></select></div>
+                <div><label>Has tracker (per Rule #45 — 'No' for orchestrators / projects without a tracker DB)</label><select id="m-ht"><option value="Yes" ${(r.has_tracker||'Yes')==='Yes'?'selected':''}>Yes</option><option value="No" ${r.has_tracker==='No'?'selected':''}>No</option></select></div>
+              </div>
+              <div class="form-row form-row-2">
+                <div><label>Date added</label><input id="m-da" value="${esc(r.date_added || new Date().toISOString().slice(0,10))}"></div>
+                <div><label>Date retired</label><input id="m-dr" value="${esc(r.date_retired || '')}"></div>
+              </div>
+              <div class="form-row"><label>Condition reviewed (YYYY-MM-DD; blank = not yet reviewed → Rule #13 will fire on next session)</label><input id="m-cr" value="${esc(r.condition_reviewed || '')}"></div>`;
+    document.getElementById('modal-title').textContent = id ? 'Edit project' : 'Add project';
+  }
+  document.getElementById('modal-fields').innerHTML = fields;
+  document.getElementById('modal-delete').style.display = id ? '' : 'none';
+  document.getElementById('modal-delete').onclick = () => {
+    if (!confirm('Delete? This is permanent in this in-browser DB until you Download.')) return;
+    if (kind === 'cats')  exec("DELETE FROM categories WHERE id = " + id);
+    if (kind === 'conds') { exec("DELETE FROM instruction_conditions WHERE condition_id = " + id); exec("DELETE FROM project_conditions WHERE condition_id = " + id); exec("DELETE FROM conditions WHERE id = " + id); }
+    if (kind === 'projs') { exec("DELETE FROM project_conditions WHERE project_id = " + id); exec("DELETE FROM projects WHERE id = " + id); }
+    closeModal(); navigateTo(currentSec);
+  };
+  document.getElementById('modal-save').onclick = () => {
+    if (kind === 'cats') {
+      const name = document.getElementById('m-name').value.trim();
+      const so   = parseInt(document.getElementById('m-so').value) || 100;
+      if (!name) { alert('Name required'); return; }
+      if (id) { const s = db.prepare("UPDATE categories SET name=?, sort_order=? WHERE id=?"); s.run([name, so, id]); s.free(); }
+      else    { const s = db.prepare("INSERT INTO categories (name, sort_order) VALUES (?, ?)"); s.run([name, so]); s.free(); }
+    }
+    if (kind === 'conds') {
+      const code = document.getElementById('m-code').value.trim();
+      const name = document.getElementById('m-name').value.trim();
+      const desc = document.getElementById('m-desc').value;
+      if (!code || !name) { alert('Code and Name required'); return; }
+      if (id) { const s = db.prepare("UPDATE conditions SET code=?, name=?, description=? WHERE id=?"); s.run([code, name, desc, id]); s.free(); }
+      else    { const s = db.prepare("INSERT INTO conditions (code, name, description) VALUES (?, ?, ?)"); s.run([code, name, desc]); s.free(); }
+    }
+    if (kind === 'projs') {
+      const code = document.getElementById('m-code').value.trim();
+      const name = document.getElementById('m-name').value.trim();
+      const ac   = document.getElementById('m-active').value;
+      const ht   = document.getElementById('m-ht').value;
+      const da   = document.getElementById('m-da').value.trim();
+      const dr   = document.getElementById('m-dr').value.trim() || null;
+      const cr   = document.getElementById('m-cr').value.trim() || null;
+      if (!code || !name) { alert('Code and Name required'); return; }
+      if (id) { const s = db.prepare("UPDATE projects SET code=?, name=?, active=?, has_tracker=?, date_added=?, date_retired=?, condition_reviewed=? WHERE id=?"); s.run([code, name, ac, ht, da, dr, cr, id]); s.free(); }
+      else    { const s = db.prepare("INSERT INTO projects (code, name, active, has_tracker, date_added, date_retired, condition_reviewed) VALUES (?, ?, ?, ?, ?, ?, ?)"); s.run([code, name, ac, ht, da, dr, cr]); s.free(); }
+    }
+    closeModal(); navigateTo(currentSec);
+  };
+  document.getElementById('modal-overlay').classList.add('open');
+}
+
+function closeModal() { document.getElementById('modal-overlay').classList.remove('open'); }
+
+// ─────────────────────────────────────────────────────────────────
+// SAVE / DOWNLOAD — with mandatory snapshot
+// ─────────────────────────────────────────────────────────────────
+
+async function saveDB() {
+  if (!db) return;
+  const edited = db.export();
+  const stamp = ts();
+  // Diagnostics — open DevTools (F12 → Console) to see what's being saved.
+  console.log('saveDB() called');
+  console.log('  openedViaFSA:', openedViaFSA);
+  console.log('  originalBytes:', originalBytes ? (originalBytes.length + ' bytes, head=' + Array.from(originalBytes.slice(0,16)).map(b => b.toString(16).padStart(2,'0')).join(' ')) : 'null');
+  console.log('  edited:', edited.length + ' bytes, head=' + Array.from(edited.slice(0,16)).map(b => b.toString(16).padStart(2,'0')).join(' '));
+  if (!isSqliteBytes(originalBytes)) {
+    alert('Refusing to save: the in-browser "original" buffer is not a SQLite database. Reopen the DB and try again. (See console for details.)');
+    return;
+  }
+  if (!isSqliteBytes(edited)) {
+    alert('Refusing to save: the edited DB export does not look like SQLite bytes. This indicates a bug — share the console output.');
+    return;
+  }
+
+  if (openedViaFSA && fileHandle && snapshotsHandle) {
+    // Branch A: File System Access — write snapshot + overwrite in one click.
+    try {
+      // 1) Write snapshot from the ORIGINAL bytes (the on-disk state before our edits).
+      const snapName = 'Instructions_pre_edit_' + stamp + '.db';
+      const snapHandle = await snapshotsHandle.getFileHandle(snapName, { create: true });
+      const snapWritable = await snapHandle.createWritable();
+      await snapWritable.write(originalBytes);
+      await snapWritable.close();
+
+      // 2) Overwrite the live Instructions.db with the edited bytes.
+      const liveWritable = await fileHandle.createWritable();
+      await liveWritable.write(edited);
+      await liveWritable.close();
+
+      // 3) Update the in-browser cached "original" so the next Download's snapshot
+      //    is against the now-current disk state.
+      originalBytes = edited;
+
+      setStatus('Saved. Snapshot: db_snapshots\\' + snapName + '  ·  Overwrote Instructions.db.');
+      alert('Saved.\n\nSnapshot: Shared\\db_snapshots\\' + snapName
+            + '\nLive file: Shared\\Instructions.db');
+    } catch (e) {
+      setStatus('FSA save failed: ' + e.message + '. Falling back to two-file download.', true);
+      twoFileDownload(edited, stamp);
+    }
+  } else {
+    // Branch B: file-picker mode — two browser downloads.
+    twoFileDownload(edited, stamp);
+  }
+}
+
+function twoFileDownload(edited, stamp) {
+  const snapName = 'Instructions_pre_edit_' + stamp + '.db';
+
+  // Download the snapshot first (original bytes).
+  triggerDownload(originalBytes, snapName);
+
+  // Then the edited file. Brief delay so the browser doesn't merge / drop one.
+  setTimeout(() => {
+    triggerDownload(edited, 'Instructions.db');
+    alert('Two files downloaded:\n\n'
+        + '1. ' + snapName + '  →  put in Shared\\db_snapshots\\\n'
+        + '2. Instructions.db  →  put in Shared\\ (overwriting the existing file)\n\n'
+        + 'To skip this manual step in the future, reopen the editor with the '
+        + '"Open Shared Folder" button (Chrome / Edge) instead of the file picker.');
+    // After download, treat the edited bytes as the new "original" for the next save.
+    originalBytes = edited;
+  }, 200);
+}
+
+function triggerDownload(bytes, filename) {
+  const blob = new Blob([bytes], { type: 'application/octet-stream' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+</script>
+</body>
+</html>
