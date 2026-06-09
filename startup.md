@@ -4,7 +4,7 @@
 
 The central rule set for all Claude-driven projects.
 
-**Source:** `C:\Users\janin\OneDrive\Documents\Claude\Projects\Instructions\Shared\Instructions.db` (READ ONLY from other projects)
+**Source:** `<your-instructions-folder>\Shared\Instructions.db` (READ ONLY from other projects)
 
 **Read interface:** the view `v_instructions_for_project` in that DB. The canonical read query is catalogued inside the Instructions project's tracker as `select_active_instructions_for_project`.
 
@@ -70,4 +70,4 @@ Until a proposed change is accepted, follow the rules in the Instructions DB.
 | Rejected proposals (archive) | `Shared\Proposed\Rejected\` |
 | Pre-write DB snapshots | `Shared\db_snapshots\` |
 
-All paths are relative to `C:\Users\janin\OneDrive\Documents\Claude\Projects\Instructions\` (the `instructions_folder` parameter in each project tracker).
+All paths are relative to `<your-instructions-folder>\` (the `instructions_folder` parameter in each project tracker).

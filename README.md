@@ -34,7 +34,7 @@ The fix: one DB, many projects, with a clean way for each project to ask "which 
 | 3. Work conventions | Domain-specific: code, queries, formatting. |
 | 4. Edge cases & vocabulary | Narrow triggers and shared language. |
 
-Within each tier, `display_order` controls the fine-grained sequence. The point of the tier hierarchy: the AI encounters foundational rules ("re-read instructions at chat start," "surface errors," "don't change instructions without approval") before domain-specific ones, which catches mistakes earlier.
+`display_order` controls the fine-grained sequence and is globally unique across active rules (enforced by the partial unique index above) — a single linear sequence across every tier and category, not per-category numbering. The tier and category sort orders still drive the reading order at the group level; the global `display_order` falls out from those groups in (tier, category) order. The point of the tier hierarchy: the AI encounters foundational rules ("re-read instructions at chat start," "surface errors," "don't change instructions without approval") before domain-specific ones, which catches mistakes earlier.
 
 **A write-back path (the Proposed folder).** Other projects don't edit `Instructions.db` directly. To propose a change, a project drops a markdown file in `Shared\Proposed\` following a four-section template:
 
@@ -98,15 +98,21 @@ CREATE TABLE instructions (
   title           TEXT NOT NULL,
   instruction     TEXT NOT NULL,
   tier_id         INTEGER NOT NULL REFERENCES tiers(id),
-  category_id    INTEGER NOT NULL REFERENCES categories(id),
-  display_order   INTEGER NOT NULL,
+  category_id     INTEGER NOT NULL REFERENCES categories(id),
+  display_order   INTEGER,
   scope           TEXT NOT NULL CHECK(scope IN ('global','conditional')),
   active          TEXT NOT NULL DEFAULT 'Yes' CHECK(active IN ('Yes','No')),
   active_when     TEXT,
   date_added      TEXT NOT NULL,
   date_retired    TEXT,
-  notes           TEXT
+  notes           TEXT,
+  migration_notes TEXT,
+  CHECK ((active = 'Yes' AND display_order IS NOT NULL)
+      OR (active = 'No'  AND display_order IS NULL))
 );
+
+CREATE UNIQUE INDEX ix_instructions_active_display_order
+  ON instructions(display_order) WHERE active='Yes';
 
 CREATE TABLE instruction_conditions (
   instruction_id INTEGER NOT NULL REFERENCES instructions(id),
@@ -134,6 +140,31 @@ ORDER BY p.code, t.sort_order, c.sort_order, i.display_order;
 ```
 
 A separate tracker DB (`Instructions_tracker.db`) carries the `items`, `notes`, `parameters`, `settings`, `data_items`, `scripts`, `query_versions`, `calendar`, `layout_options`, plus the two Instructions-specific tables: `rule_change_log` (every applied change to `Instructions.db`) and `proposal_queue` (the queue of files in `Shared\Proposed\`).
+
+## Rule lifecycle policies
+
+Three policies govern how rows in `instructions` are created, retired, and ordered. They started as conventions and were promoted to schema constraints once the convention began to leak.
+
+**ID stability.** `instructions.id` is `INTEGER PRIMARY KEY AUTOINCREMENT`. Once an ID is assigned, it is permanent — the rule keeps its original ID for the life of the table, the ID is never reused for another rule, and the ID does not change when the rule is edited, reordered, deactivated, or reactivated. Rule numbers therefore do not correspond to display order; a rule added later can occupy any display position. Stable IDs let `rule_change_log.instruction_id`, items-table notes, memory cache entries, and external references keep working across reorders.
+
+**Deactivation, not deletion.** Rules are never removed from the table. When a rule is no longer in force, set `active='No'` and populate `date_retired`. The row stays. `v_instructions_for_project` filters on `active='Yes'`, so retired rules are invisible to running sessions but remain in the table for historical lookup and possible reactivation. Reactivating sets `active='Yes'`, clears `date_retired`, and assigns a fresh `display_order`. The ID stays the same.
+
+**Globally-unique display_order.** `display_order` is unique across all active rules (enforced by the partial unique index `WHERE active='Yes'`). The order is global, not per-category. Retired rules have `display_order=NULL` (enforced by the table-level CHECK), so the slot is free for an active rule to occupy. Display orders may be reassigned freely among active rules to reorder the rule set; reassignment does not change IDs.
+
+These policies make the rule set linearly orderable and let any external reference to a rule by ID stay valid indefinitely — the meta-layer that keeps the system from rotting as it grows.
+
+## Rule writing standards
+
+Two conventions for writing rules, on top of the lifecycle policies:
+
+**Self-contained text.** Each rule should state its directive and reasoning in full within its own body. A reader who has only one rule's text should understand what to do and why. Rules can reference each other by concept (e.g., "the surface-errors rule," "the proposal-and-approval flow") but not by number — IDs are stable but display positions are not, and "see Rule #5" rots the first time something gets renumbered.
+
+**Surface conflicts during proposal.** When proposing a new rule or editing an existing one, evaluate whether the proposed wording conflicts with any other active rule (contradiction, ambiguity about which fires, overlapping scope without clear precedence) and surface any conflict in the proposal's rationale before approval. Resolve by amending the new rule, editing the older rule(s), or explicitly defining precedence.
+
+## Continuous improvement
+
+Every approved decision in the system — architecture, schema, vendor or tool selection, coding pattern, workflow convention, and the rules themselves — stays subject to revision. Approval is the gate that lets a change be implemented; it is not a commitment that the choice will never change. New information, errors surfaced under the surface-errors rule, shifting requirements, or a better understanding of the problem are all legitimate reasons to revisit a prior decision. Re-evaluation runs through the same approval gates as the original — the proposal protocol for the rules DB, the project-tracker workflow for project work, the snapshot-and-verify pattern for file changes. Continuous improvement does not bypass approval; it works through it.
+
 
 ## Folder structure
 
